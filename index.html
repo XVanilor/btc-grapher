@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Blockchain vizualize</title>
+    <link rel="stylesheet" href="assets/bootstrap.min.css"/>
+    <style>
+        body {
+            height: 100vh;
+        }
+
+        .container {
+            height: 80%;
+        }
+
+        #search-field {
+            margin: auto;
+        }
+
+        #addrList > li:first-child {
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+
+    <h2>Blockchain vizualizer</h2>
+
+    <div class="input-group mb-3" id="search-field">
+        <input type="text" class="form-control form-control-lg" placeholder="BTC address" id="search-input" autofocus>
+        <div class="input-group-append">
+            <button class="btn btn-info" type="button" id="submit-btn">GO</button>
+        </div>
+        <div class="input-group-append">
+            <button class="btn btn-info" type="button" onclick="generateCsv()">GET CSV</button>
+        </div>
+    </div>
+
+    <p>Gathered <span class="font-weight-bold" id="addrCount">0</span> addresses.</p>
+    <ul id="addrList">
+
+    </ul>
+</div>
+
+<script type="text/javascript" src="assets/jquery.min.js"></script>
+<script type="text/javascript" src="assets/vis-network.min.js"></script>
+<script type="text/javascript">
+
+    window.app = {
+        bc_data_trans: {}
+    };
+
+    document.getElementById("submit-btn").addEventListener("click", async (e) => {
+
+        const baseBtcAddr = $("#search-input").val();
+        let queue = [baseBtcAddr];
+        let alreadyDone = [];
+
+        while (queue.length > 0) {
+
+            const curBtcAddr = queue.shift();
+
+            if (alreadyDone.includes(curBtcAddr))
+                continue;
+
+            alreadyDone.push(curBtcAddr);
+
+            // Update addresses list
+            let firstAddr = $("#addrList>li:first").first();
+            let lastAddr = firstAddr.text();
+            firstAddr.text(lastAddr.replace(" (processing)", ""));
+            $("#addrList").prepend("<li>" + curBtcAddr + " (processing)</li>");
+
+            // Update addresses count
+            $("#addrCount").text($("#addrList>li").length.toString());
+
+            await $.ajax({
+                url: "https://blockchain.info/rawaddr/" + curBtcAddr,
+                method: "GET",
+                async: true,
+                success: async (res) => {
+
+                    if (!res.hasOwnProperty("txs"))
+                        return;
+
+                    for (const tx of res.txs) {
+                        for (const outTrans of tx.out) {
+                            if (outTrans.hasOwnProperty("addr")) {
+
+                                const edgeId = curBtcAddr + "/" + outTrans.addr;
+                                window.app.bc_data_trans[edgeId] = {
+                                    id: edgeId,
+                                    label: outTrans.value / 1000000,
+                                    src: curBtcAddr,
+                                    to: outTrans.addr,
+                                    arrows: "to"
+                                };
+
+                                queue.push(outTrans.addr);
+                            }
+                        }
+
+                        for (const inTrans of tx.inputs) {
+                            if (inTrans.hasOwnProperty("addr")) {
+                                const edgeId = inTrans.addr + "/" + curBtcAddr;
+                                window.app.bc_data_trans[edgeId] = {
+                                    id: edgeId,
+                                    label: inTrans.value / 1000000,
+                                    src: inTrans.addr,
+                                    to: curBtcAddr,
+                                    arrows: "to"
+                                };
+                                queue.push(inTrans.addr);
+                            }
+                        }
+                    }
+
+                    // Delay next request to avoid being blocked by the firewall
+                    // Cloudflare delay: 1200req/5min <=> 4req/s
+                    await new Promise(r => setTimeout(r, 5000));
+
+                },
+                error: async (jqXHR) => {
+
+                    // Hit Cloudflare rate limiting. Waiting for 5 minute
+                    queue.push(curBtcAddr);
+                    alreadyDone = alreadyDone.filter(e => e !== curBtcAddr);
+
+                    alert("Hit Cloudflare rate limiting (error 429). Please retry in 24 hours. Current queue will be downloaded as well as current transactions scheme");
+
+                    download("queue.json", JSON.stringify(queue));
+                }
+            });
+        }
+
+        generateCsv();
+    });
+
+    function download(fileName, content) {
+        var dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(content);
+        var downloadAnchorNode = document.createElement('a');
+        downloadAnchorNode.setAttribute("href", dataStr);
+        downloadAnchorNode.setAttribute("download", fileName);
+        document.body.appendChild(downloadAnchorNode); // required for firefox
+        downloadAnchorNode.click();
+        downloadAnchorNode.remove();
+    }
+
+    /**
+     * Use this function manually in case of request blocking by Cloudflare
+     */
+    function generateCsv() {
+        // Once all btc history download is done, parse the bc_data object into an unique CSV for Gephie
+        let csvContent = "Source,Target,Weight,Type,Transaction_Value\n";
+        let transIds = Object.keys(window.app.bc_data_trans);
+        for (const transId in transIds) {
+            const trans = window.app.bc_data_trans[transId];
+            csvContent += trans["src"] + "," + trans["to"] + "," + (parseFloat(trans["label"]) * 100).toString() + "," + "directed" + "," + trans["label"] + "\n";
+        }
+
+        download("all.csv", csvContent);
+    }
+
+</script>
+</body>
+</html>
